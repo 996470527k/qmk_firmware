@@ -19,6 +19,8 @@ TMK_COMMON_SRC +=	$(COMMON_DIR)/host.c \
 	$(PLATFORM_COMMON_DIR)/suspend.c \
 	$(PLATFORM_COMMON_DIR)/timer.c \
 	$(PLATFORM_COMMON_DIR)/bootloader.c \
+else ifeq ($(PLATFORM), NRF5)
+	PLATFORM_COMMON_DIR = $(COMMON_DIR)/nrf5
 
 ifeq ($(PLATFORM),AVR)
   TMK_COMMON_SRC += $(PLATFORM_COMMON_DIR)/xprintf.S
@@ -31,7 +33,12 @@ else ifeq ($(PLATFORM),CHIBIOS)
   VPATH += $(PRINTF_PATH)
 else ifeq ($(PLATFORM),ARM_ATSAM)
   TMK_COMMON_SRC += $(PLATFORM_COMMON_DIR)/printf.c
+
+ifeq ($(PLATFORM),NRF5)
+  TMK_COMMON_SRC += $(PLATFORM_COMMON_DIR)/eeprom.c
 endif
+
+
 
 # Option modules
 BOOTMAGIC_ENABLE ?= no
@@ -175,3 +182,7 @@ endif
 # Search Path
 VPATH += $(TMK_PATH)/$(COMMON_DIR)
 VPATH += $(TMK_PATH)/$(PLATFORM_COMMON_DIR)
+
+ifeq ($(PLATFORM),NRF5)
+VPATH += $(TMK_PATH)/$(COMMON_DIR)/nrf
+endif
