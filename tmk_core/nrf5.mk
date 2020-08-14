@@ -72,6 +72,7 @@ NRFSRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_twim.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_usbd.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_wdt.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_pwm.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
   $(SDK_ROOT)/modules/nrfx/mdk/gcc_startup_nrf52840.S \
   $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52840.c \
@@ -155,7 +156,6 @@ NRFINC_FOLDERS += \
   $(SDK_ROOT)/modules/nrfx/hal \
   $(SDK_ROOT)/modules/nrfx/mdk \
 
-
 ifeq ($(NRF_DEBUG), yes)
   NRF_CFLAGS += -DNRF_LOG_ENABLED=1
   NRF_CFLAGS += -DNRF_LOG_BACKEND_RTT_ENABLED=1
@@ -171,15 +171,15 @@ endif
 NRF_OPT = -Os -g3
 NRF_CFLAGS += $(NRF_OPT)
 NRF_CFLAGS += -DBOARD_PCA10056
+NRF_CFLAGS += -DCONFIG_NFCT_PINS_AS_GPIOS
 NRF_CFLAGS += -DCONFIG_GPIO_AS_PINRESET
 NRF_CFLAGS += -DFLOAT_ABI_HARD
 NRF_CFLAGS += -DNRF52840_XXAA
 NRF_CFLAGS += -DSWI_DISABLE0
+
 NRF_CFLAGS += -mcpu=cortex-m4
 NRF_CFLAGS += -mthumb -mabi=aapcs
-
 NRF_CFLAGS += -Wall
-# keep every function in a separate section, this allows linker to discard unused ones
 NRF_CFLAGS += -mfloat-abi=hard -mfpu=fpv4-sp-d16
 # keep every function in a separate section, this allows linker to discard unused ones
 NRF_CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
@@ -216,16 +216,18 @@ NRF_LDFLAGS += -Wl,--gc-sections
 # use newlib in nano version
 NRF_LDFLAGS += --specs=nano.specs
 
+# # Toolchain commands
+CC      = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-gcc
+AR      = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-ar
+NM      = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-nm
+OBJDUMP = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-objdump
+OBJCOPY = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-objcopy
+SIZE    = $(GNU_INSTALL_ROOT)$(GNU_PREFIX)-size
+HEX     = $(OBJCOPY) -O $(FORMAT)
+EEP     =
+BIN     = $(OBJCOPY) -O binary
 
-CC = arm-none-eabi-gcc
-OBJCOPY = arm-none-eabi-objcopy
-OBJDUMP = arm-none-eabi-objdump
-SIZE = arm-none-eabi-size
-AR = arm-none-eabi-ar
-NM = arm-none-eabi-nm
-HEX = $(OBJCOPY) -O $(FORMAT)
-EEP =
-BIN = $(OBJCOPY) -O binary
+COMMON_VPATH += $(DRIVER_PATH)/nrf5
 
 NRFCFLAGS += $(COMPILEFLAGS)
 MCUFLAGS = -mcpu=cortex-m4
@@ -237,3 +239,68 @@ EXTRAINCDIRS := $(NRFINC_FOLDERS)
 CFLAGS += $(NRF_CFLAGS)
 LDFLAGS += $(NRF_LDFLAGS)
 ASFLAGS += $(ASMFLAGS)
+
+$(BUILD_DIR)/private.key:
+	nrfutil keys generate $(BUILD_DIR)/private.key
+$(BUILD_DIR)/public_key.c:
+	nrfutil keys display --key pk --format code $(BUILD_DIR)/private.key --out_file $(BUILD_DIR)/public_key.c
+generate-keys: $(BUILD_DIR)/private.key $(BUILD_DIR)/public_key.c
+
+bin: $(BUILD_DIR)/$(TARGET).bin cpfirmware sizeafter
+	$(COPY) $(BUILD_DIR)/$(TARGET).bin $(TARGET).bin;
+
+export GNU_INSTALL_ROOT
+export GNU_PREFIX
+generate-bootloader:
+	$(MAKE) -C tmk_core/$(NRF_DIR)/bootloader/pca10056_usb/armgcc
+
+flash_softdevice:
+	@echo Flashing: s140_nrf52_6.1.1_softdevice.hex
+	nrfjprog -f nrf52 --reset --program $(SDK_ROOT)/components/softdevice/s140/hex/s140_nrf52_6.1.1_softdevice.hex
+
+flash_bootloader: generate-bootloader
+	@echo Flashing: .build/nrf_bootloader/nrf52840_xxaa.hex
+	nrfjprog -f nrf52 --reset --program $(BUILD_DIR)/nrf_bootloader/nrf52840_xxaa.hex
+
+bootloader: generate-bootloader
+	nrfjprog -f nrf52 --recover
+	nrfjprog -f nrf52 --eraseall
+	@echo Flashing: s140_nrf52_6.1.1_softdevice.hex
+	nrfjprog -f nrf52 --program $(SDK_ROOT)/components/softdevice/s140/hex/s140_nrf52_6.1.1_softdevice.hex
+	@echo Flashing: .build/nrf_bootloader/nrf52840_xxaa.hex
+	nrfjprog -f nrf52 --program $(BUILD_DIR)/nrf_bootloader/nrf52840_xxaa.hex
+	nrfjprog -f nrf52 --reset
+
+nrfutil: $(BUILD_DIR)/$(TARGET).bin cpfirmware sizeafter
+	nrfutil pkg generate --hw-version 52 --application-version 1 --sd-req 0xB6 --application $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET).zip
+	$(call EXEC_NRFUTIL)
+
+GREP ?= grep
+
+define EXEC_NRFUTIL
+	USB= ;\
+	if $(GREP) -q -s Microsoft /proc/version; then \
+		echo 'ERROR: NRF flashing cannot be automated within the Windows Subsystem for Linux (WSL) currently. Instead, take the .hex file generated and flash it using AVRDUDE, AVRDUDESS, or XLoader.'; \
+	else \
+		printf "Detecting USB port, reset your controller now."; \
+		ls /dev/tty* > /tmp/1; \
+		while [ -z $$USB ]; do \
+			sleep 0.5; \
+			printf "."; \
+			ls /dev/tty* > /tmp/2; \
+			USB=`comm -13 /tmp/1 /tmp/2 | $(GREP) -o '/dev/tty.*'`; \
+			mv /tmp/2 /tmp/1; \
+		done; \
+		echo ""; \
+		echo "Device $$USB has appeared; assuming it is the controller."; \
+		if $(GREP) -q -s 'MINGW\|MSYS' /proc/version; then \
+			USB=`echo "$$USB" | perl -pne 's/\/dev\/ttyS(\d+)/COM.($$1+1)/e'`; \
+			echo "Remapped MSYS2 USB port to $$USB"; \
+			sleep 1; \
+		else \
+			printf "Waiting for $$USB to become writable."; \
+			while [ ! -w "$$USB" ]; do sleep 0.5; printf "."; done; echo ""; \
+		fi; \
+		nrfutil dfu usb-serial -pkg $(BUILD_DIR)/$(TARGET).zip -p $$USB; \
+	fi
+endef
